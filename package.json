@@ -1,6 +1,6 @@
 {
   "name": "asdi-ticketing",
-  "version": "5.2.0",
+  "version": "5.3.0",
   "private": true,
   "description": "ASDI_Ticketing chatroom-only Windows messenger with editable server settings",
   "main": "main.js",
