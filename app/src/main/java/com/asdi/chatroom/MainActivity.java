@@ -1,0 +1,340 @@
+package com.asdi.chatroom;
+
+import android.Manifest;
+import android.app.Activity;
+import android.view.Menu;
+import android.view.MenuItem;
+import org.json.JSONArray;
+import android.webkit.CookieManager;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.Notification;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
+import android.view.Gravity;
+import android.view.View;
+import android.widget.FrameLayout;
+import android.widget.TextView;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebChromeClient;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.webkit.WebResourceRequest;
+import android.content.Intent;
+import android.net.Uri;
+import android.app.PendingIntent;
+import android.app.AlertDialog;
+import android.webkit.ValueCallback;
+import android.provider.MediaStore;
+import android.webkit.PermissionRequest;
+import android.webkit.WebSettings;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import org.json.JSONObject;
+
+public class MainActivity extends Activity {
+  private static final String DEFAULT_BASE = "http://100.69.232.118:8080/asdi_ticketing/";
+  private String base = DEFAULT_BASE;
+  private String chatUrl = DEFAULT_BASE + "messenger.php";
+  private static final String CHANNEL = "asdi_chat_messages";
+  private WebView web;
+  private TextView badge;
+  private FrameLayout root;
+  private ValueCallback<Uri[]> fileCallback;
+  private Uri pendingPhoto;
+  private static final int FILE_PICKER_REQUEST = 620;
+  private final Handler handler = new Handler(Looper.getMainLooper());
+  private long lastSeen = 0;
+  private int unread = 0;
+  private boolean initialized = false;
+  private boolean active = false;
+  private long lastTicketId = -1;
+  private static final String TICKET_CHANNEL = "asdi_new_tickets_v1";
+
+  private final Runnable poll = new Runnable() {
+    @Override public void run() {
+      if (active && web != null && web.getUrl() != null && web.getUrl().startsWith(base)) {
+        String js = "(function(){fetch('group_chat.php',{credentials:'same-origin',cache:'no-store'})" +
+          ".then(r=>r.ok?r.json():null).then(j=>{if(j&&Array.isArray(j.messages)){" +
+          "let messages=j.messages;let id=messages.reduce((m,x)=>Math.max(m,Number(x.id)||0),0);" +
+          "let mine=messages.filter(x=>Number(x.id)>" + lastSeen + ");" +
+          "ASDI.onMessages(String(id),String(mine.length));}}).catch(()=>{});})()";
+        web.evaluateJavascript(js, null);
+      }
+      pollTickets();
+      handler.postDelayed(this, 15000);
+    }
+  };
+
+  @Override public void onCreate(Bundle savedInstanceState) {
+    super.onCreate(savedInstanceState);
+    chatUrl = base + "messenger.php";
+    lastSeen = getPreferences(0).getLong("last_seen_" + base, 0);
+    NotificationManager manager = (NotificationManager)getSystemService(NOTIFICATION_SERVICE);
+    if (Build.VERSION.SDK_INT >= 26) {
+      NotificationChannel channel = new NotificationChannel(CHANNEL, "New chat messages", NotificationManager.IMPORTANCE_DEFAULT);
+      channel.setDescription("ASDI Chatroom message alerts");
+      channel.enableVibration(true);
+      manager.createNotificationChannel(channel);
+    }
+    if (Build.VERSION.SDK_INT >= 26) {
+      NotificationChannel ticketChannel = new NotificationChannel(TICKET_CHANNEL, "New service tickets", NotificationManager.IMPORTANCE_HIGH);
+      ticketChannel.setDescription("Detailed alerts for newly created ASDI tickets");
+      ticketChannel.enableVibration(true);
+      manager.createNotificationChannel(ticketChannel);
+    }
+    lastTicketId = getPreferences(0).getLong("ticket_last_" + base, -1);
+    if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+      requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 101);
+    }
+    root = new FrameLayout(this);
+    web = new WebView(this);
+    root.addView(web, new FrameLayout.LayoutParams(-1, -1));
+    badge = new TextView(this);
+    badge.setTextColor(Color.WHITE);
+    badge.setTextSize(13);
+    badge.setGravity(Gravity.CENTER);
+    badge.setMinWidth(dp(28));
+    badge.setMinHeight(dp(28));
+    badge.setPadding(dp(6), dp(2), dp(6), dp(2));
+    GradientDrawable bg = new GradientDrawable();
+    bg.setColor(0xFFE02030);
+    bg.setCornerRadius(dp(40));
+    badge.setBackground(bg);
+    badge.setVisibility(View.GONE);
+    FrameLayout.LayoutParams bp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.RIGHT);
+    bp.setMargins(0, dp(10), dp(10), 0);
+    root.addView(badge, bp);
+    // Photo capture is available from the chat composer attachment picker.
+    // No floating button is displayed over the conversation.
+    setContentView(root);
+
+    web.getSettings().setJavaScriptEnabled(true);
+    web.getSettings().setDomStorageEnabled(true);
+    web.getSettings().setUseWideViewPort(true);
+    web.getSettings().setLoadWithOverviewMode(true);
+    web.getSettings().setTextZoom(100);
+    web.getSettings().setBuiltInZoomControls(false);
+    web.getSettings().setDisplayZoomControls(false);
+    web.getSettings().setAllowFileAccess(false);
+    web.getSettings().setAllowContentAccess(true);
+    android.webkit.CookieManager.getInstance().setAcceptCookie(true);
+    web.addJavascriptInterface(new Object() {
+      @JavascriptInterface public void onMessages(String raw, String count) {
+        try {
+          final long newest = Long.parseLong(raw);
+          final int incoming = Integer.parseInt(count);
+          runOnUiThread(() -> updateMessages(newest, incoming));
+        } catch (NumberFormatException ignored) { }
+      }
+      @JavascriptInterface public void onTickets(String json) {
+        runOnUiThread(() -> handleTickets(json));
+      }
+    }, "ASDI");
+    web.setWebChromeClient(new WebChromeClient() {
+      @Override public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
+        if (fileCallback != null) fileCallback.onReceiveValue(null);
+        fileCallback = callback;
+        Intent picker = new Intent(Intent.ACTION_GET_CONTENT);
+        picker.addCategory(Intent.CATEGORY_OPENABLE);
+        picker.setType("*/*");
+        String[] types = params.getAcceptTypes();
+        if (types != null && types.length > 0 && !types[0].isEmpty()) {
+          if (types.length == 1) picker.setType(types[0]);
+          else picker.putExtra(Intent.EXTRA_MIME_TYPES, types);
+        }
+        Intent chooser = Intent.createChooser(picker, "Choose attachment or take photo");
+        pendingPhoto = null;
+        try {
+          android.content.ContentValues values = new android.content.ContentValues();
+          values.put(MediaStore.Images.Media.DISPLAY_NAME, "ASDI_photo_" + System.currentTimeMillis() + ".jpg");
+          values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+          pendingPhoto = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+          if (pendingPhoto != null) {
+            Intent capture = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+            capture.putExtra(MediaStore.EXTRA_OUTPUT, pendingPhoto);
+            capture.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            if (capture.resolveActivity(getPackageManager()) != null) chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{capture});
+          }
+        } catch (Exception ignored) { pendingPhoto = null; }
+        try { startActivityForResult(chooser, FILE_PICKER_REQUEST); }
+        catch (Exception e) { fileCallback.onReceiveValue(null); fileCallback = null; return false; }
+        return true;
+      }
+
+    });
+    web.setWebViewClient(new WebViewClient() {
+      @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+        Uri u = request.getUrl();
+        if (("http".equals(u.getScheme()) || "https".equals(u.getScheme())) && Uri.parse(base).getHost().equals(u.getHost()) && u.getPath() != null && u.getPath().startsWith(Uri.parse(base).getPath())) return false;
+        try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (Exception ignored) { }
+        return true;
+      }
+      @Override public void onPageFinished(WebView view, String url) {
+        if (url != null && url.startsWith(base)) applyMobileCss(view);
+        if (url != null && (url.equals(base) || url.equals(base + "index.php") || url.equals(base + "dashboard.php"))) view.loadUrl(chatUrl);
+      }
+    });
+    web.loadUrl(chatUrl);
+    handleIntent(getIntent());
+    handler.postDelayed(poll, 10000);
+  }
+
+  @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+    super.onActivityResult(requestCode, resultCode, data);
+    if (requestCode != FILE_PICKER_REQUEST || fileCallback == null) return;
+    Uri[] result = null;
+    if (resultCode == RESULT_OK) {
+      if (data != null && data.getData() != null) result = new Uri[]{data.getData()};
+      else if (pendingPhoto != null) result = new Uri[]{pendingPhoto};
+    }
+    if (result == null && pendingPhoto != null) try { getContentResolver().delete(pendingPhoto, null, null); } catch (Exception ignored) { }
+    fileCallback.onReceiveValue(result);
+    fileCallback = null;
+    pendingPhoto = null;
+  }
+
+  private void applyMobileCss(WebView view) {
+    try (InputStream in = getAssets().open("mobile.css")) {
+      byte[] bytes = new byte[in.available()];
+      int len = in.read(bytes);
+      if (len <= 0) return;
+      String css = new String(bytes, 0, len, StandardCharsets.UTF_8);
+      String js = "(function(){" +
+        "if(!document.querySelector('meta[name=viewport]')){var m=document.createElement('meta');m.name='viewport';m.content='width=device-width,initial-scale=1,viewport-fit=cover';document.head.appendChild(m);}" +
+        "var old=document.getElementById('asdi-mobile-css');if(old)old.remove();" +
+        "var st=document.createElement('style');st.id='asdi-mobile-css';st.textContent=" + JSONObject.quote(css) + ";document.head.appendChild(st);" +
+        "})()";
+      view.evaluateJavascript(js, null);
+    } catch (Exception ignored) { }
+  }
+
+
+  private void pollTickets() {
+    if (web == null || web.getUrl() == null || !web.getUrl().startsWith(base)) return;
+    String js = "(function(){fetch('mobile_ticket_notifications.php?after=" + Math.max(0,lastTicketId) +
+      "',{credentials:'same-origin',cache:'no-store'}).then(r=>r.ok?r.json():null)" +
+      ".then(j=>{if(j&&Array.isArray(j.tickets))ASDI.onTickets(JSON.stringify(j));}).catch(()=>{});})()";
+    web.evaluateJavascript(js, null);
+  }
+  private void handleTickets(String json) {
+    try {
+      JSONObject response = new JSONObject(json);
+      long latest = response.optLong("latest",0);
+      JSONArray tickets = response.optJSONArray("tickets");
+      if (lastTicketId < 0) {
+        lastTicketId = latest; // First run: do not alert on historical tickets.
+      } else if (tickets != null) {
+        for (int i=0;i<tickets.length();i++) {
+          JSONObject ticket = tickets.getJSONObject(i);
+          if (ticket.optLong("id") > lastTicketId) notifyTicket(ticket);
+        }
+        lastTicketId = Math.max(lastTicketId, latest);
+      }
+      getPreferences(0).edit().putLong("ticket_last_" + base,lastTicketId).apply();
+    } catch(Exception ignored) { }
+  }
+  private void notifyTicket(JSONObject ticket) {
+    if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) return;
+    long id=ticket.optLong("id");
+    JSONObject fields=ticket.optJSONObject("fields");
+    StringBuilder details=new StringBuilder();
+    if(fields!=null) {
+      java.util.Iterator<String> keys=fields.keys();
+      while(keys.hasNext()) {
+        String key=keys.next();
+        if(details.length()>0)details.append("\n");
+        details.append(key).append(": ").append(fields.optString(key));
+      }
+    }
+    Intent open=new Intent(this,MainActivity.class);
+    open.setAction("ticket_"+id);
+    open.putExtra("open_ticket",base+"ticket_view.php?id="+id);
+    open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP|Intent.FLAG_ACTIVITY_CLEAR_TOP);
+    PendingIntent pending=PendingIntent.getActivity(this,(int)(id%Integer.MAX_VALUE),open,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
+    Notification.Builder builder=Build.VERSION.SDK_INT>=26 ? new Notification.Builder(this,TICKET_CHANNEL) : new Notification.Builder(this);
+    builder.setSmallIcon(android.R.drawable.ic_dialog_info)
+      .setContentTitle(ticket.optString("title","New ASDI ticket"))
+      .setContentText(fields==null?"Tap to view ticket":fields.optString("Customer","Tap to view ticket"))
+      .setStyle(new Notification.BigTextStyle().bigText(details.toString()))
+      .setContentIntent(pending).setAutoCancel(true);
+    ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify((int)(30000+id%100000),builder.build());
+  }
+  private void handleIntent(Intent intent) {
+    if(intent!=null && intent.hasExtra("open_ticket") && web!=null) {
+      String url=intent.getStringExtra("open_ticket");
+      if(url!=null && url.startsWith(base+"ticket_view.php?id=")) web.loadUrl(url);
+    }
+  }
+  @Override public boolean onCreateOptionsMenu(Menu menu) {
+    menu.add(0,1,0,"Chats");
+    menu.add(0,3,1,"Group chat");
+    menu.add(0,2,1,"Logout");
+    return true;
+  }
+  @Override public boolean onOptionsItemSelected(MenuItem item) {
+    if(item.getItemId()==1) { web.loadUrl(chatUrl); return true; }
+    if(item.getItemId()==3) { web.loadUrl(base+"chat_window.php"); return true; }
+    if(item.getItemId()==2) {
+      new AlertDialog.Builder(this).setTitle("Log out?")
+        .setMessage("End your ASDI session on this device?")
+        .setNegativeButton("Cancel",null)
+        .setPositiveButton("Logout",(d,w)->{
+          web.evaluateJavascript("fetch('mobile_logout.php',{method:'POST',credentials:'same-origin'}).finally(()=>{window.location.href='login.php';})",null);
+          initialized=false;lastSeen=0;lastTicketId=-1;clearBadge();
+          getPreferences(0).edit().remove("last_seen_"+base).remove("ticket_last_"+base).apply();
+        }).show();
+      return true;
+    }
+    return super.onOptionsItemSelected(item);
+  }
+
+  private int dp(int v) { return (int)(v * getResources().getDisplayMetrics().density + .5f); }
+  private void updateMessages(long newest, int incoming) {
+    if (!initialized) {
+      initialized = true;
+      lastSeen = Math.max(lastSeen, newest);
+      getPreferences(0).edit().putLong("last_seen_" + base, lastSeen).apply();
+      return;
+    }
+    if (newest <= lastSeen) return;
+    // IDs can have gaps: count indicates new IDs, not necessarily unread messages.
+    long delta = Math.max(0, incoming);
+    lastSeen = newest;
+    getPreferences(0).edit().putLong("last_seen_" + base, lastSeen).apply();
+    if (delta == 0) return;
+    unread = (int)Math.min(999, unread + Math.min(delta, 99));
+    badge.setText(unread > 99 ? "99+" : String.valueOf(unread));
+    badge.setVisibility(View.VISIBLE);
+    showNotification();
+  }
+  private void showNotification() {
+    if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) return;
+    Intent open = new Intent(this, MainActivity.class);
+    open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+    PendingIntent pending = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    Notification n = new Notification.Builder(this, CHANNEL)
+      .setSmallIcon(android.R.drawable.ic_dialog_email)
+      .setContentTitle("ASDI Chatroom")
+      .setContentText("New chat messages received")
+      .setContentIntent(pending)
+      .setAutoCancel(true)
+      .setNumber(unread)
+      .build();
+    ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(2001, n);
+  }
+  @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); handleIntent(intent); clearBadge(); }
+  private void clearBadge() {
+    unread = 0;
+    if (badge != null) badge.setVisibility(View.GONE);
+    ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).cancel(2001);
+  }
+  @Override protected void onResume() { super.onResume(); active = true; clearBadge(); }
+  @Override protected void onPause() { super.onPause(); }
+  @Override public void onBackPressed() { if (web != null && web.canGoBack()) web.goBack(); else super.onBackPressed(); }
+  @Override protected void onDestroy() { active = false; handler.removeCallbacksAndMessages(null); if (web != null) web.destroy(); super.onDestroy(); }
+}
