@@ -39,7 +39,7 @@ import org.json.JSONObject;
 public class MainActivity extends Activity {
   private static final String DEFAULT_BASE = "http://100.69.232.118:8080/asdi_ticketing/";
   private String base = DEFAULT_BASE;
-  private String chatUrl = DEFAULT_BASE + "messenger.php";
+  private String chatUrl = DEFAULT_BASE + "chatroom.php";
   private static final String CHANNEL = "asdi_chat_messages";
   private WebView web;
   private TextView badge;
@@ -72,7 +72,7 @@ public class MainActivity extends Activity {
 
   @Override public void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
-    chatUrl = base + "messenger.php";
+    chatUrl = base + "chatroom.php";
     lastSeen = getPreferences(0).getLong("last_seen_" + base, 0);
     NotificationManager manager = (NotificationManager)getSystemService(NOTIFICATION_SERVICE);
     if (Build.VERSION.SDK_INT >= 26) {
@@ -107,7 +107,7 @@ public class MainActivity extends Activity {
     badge.setBackground(bg);
     badge.setVisibility(View.GONE);
     FrameLayout.LayoutParams bp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.RIGHT);
-    bp.setMargins(0, dp(10), dp(10), 0);
+    bp.setMargins(0, dp(12), dp(12), 0);
     root.addView(badge, bp);
     // Photo capture is available from the chat composer attachment picker.
     // No floating button is displayed over the conversation.
@@ -176,7 +176,7 @@ public class MainActivity extends Activity {
       }
       @Override public void onPageFinished(WebView view, String url) {
         if (url != null && url.startsWith(base)) applyMobileCss(view);
-        if (url != null && (url.equals(base) || url.equals(base + "index.php") || url.equals(base + "dashboard.php"))) view.loadUrl(chatUrl);
+        if (url != null && url.equals(base)) view.loadUrl(chatUrl);
       }
     });
     web.loadUrl(chatUrl);
@@ -271,14 +271,14 @@ public class MainActivity extends Activity {
     }
   }
   @Override public boolean onCreateOptionsMenu(Menu menu) {
-    menu.add(0,1,0,"Chats");
-    menu.add(0,3,1,"Group chat");
+    menu.add(0,1,0,"Chatroom");
+    menu.add(0,3,1,"Private messages");
     menu.add(0,2,1,"Logout");
     return true;
   }
   @Override public boolean onOptionsItemSelected(MenuItem item) {
     if(item.getItemId()==1) { web.loadUrl(chatUrl); return true; }
-    if(item.getItemId()==3) { web.loadUrl(base+"chat_window.php"); return true; }
+    if(item.getItemId()==3) { web.loadUrl(base+"messenger.php"); return true; }
     if(item.getItemId()==2) {
       new AlertDialog.Builder(this).setTitle("Log out?")
         .setMessage("End your ASDI session on this device?")
@@ -334,7 +334,7 @@ public class MainActivity extends Activity {
     ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).cancel(2001);
   }
   @Override protected void onResume() { super.onResume(); active = true; clearBadge(); }
-  @Override protected void onPause() { super.onPause(); }
+  @Override protected void onPause() { active = false; super.onPause(); }
   @Override public void onBackPressed() { if (web != null && web.canGoBack()) web.goBack(); else super.onBackPressed(); }
   @Override protected void onDestroy() { active = false; handler.removeCallbacksAndMessages(null); if (web != null) web.destroy(); super.onDestroy(); }
 }
