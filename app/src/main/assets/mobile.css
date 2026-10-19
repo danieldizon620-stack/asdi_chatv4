@@ -9,3 +9,18 @@ input,textarea,select{font-size:16px}
   .asdi-room-emoji-panel{max-width:calc(100vw - 20px)}
   .asdi-room-sticker-grid img,.dm-sticker{object-fit:contain}
 }
+
+/* Android-only full-screen chat: remove ticketing navigation and browser-style tabs. */
+body:has(.asdi-room) header:not(.asdi-room-title),
+body:has(.asdi-room) .main-nav,
+body:has(.asdi-room) .top-nav,
+body:has(.asdi-room) nav:not(.asdi-room-list),
+body:has(.asdi-room) .asdi-room-tabs,
+body:has(.asdi-room) footer,
+body:has(.asdi-room) .asdi-chat-dock,
+body:has(.asdi-room) .asdi-chat-quicklinks{display:none!important}
+body:has(.asdi-room) main,
+body:has(.asdi-room) .wrap,
+body:has(.asdi-room) .container{max-width:none!important;width:100%!important;margin:0!important;padding:0!important}
+body:has(.asdi-room) .asdi-room{height:100dvh!important;min-height:0!important;border-radius:0!important;border:0!important}
+body:has(.asdi-room) .asdi-room-compose{padding-bottom:max(12px,env(safe-area-inset-bottom))!important}

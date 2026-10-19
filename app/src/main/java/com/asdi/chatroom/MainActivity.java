@@ -53,25 +53,26 @@ public class MainActivity extends Activity {
   private boolean initialized = false;
   private boolean active = false;
   private long lastTicketId = -1;
+  private long lastGroupMessageId = -1;
+  private long lastPrivateMessageId = -1;
+  private boolean chatBaselineSet = false;
+  private boolean returningFromLogin = false;
   private static final String TICKET_CHANNEL = "asdi_new_tickets_v1";
 
   private final Runnable poll = new Runnable() {
     @Override public void run() {
-      if (active && web != null && web.getUrl() != null && web.getUrl().startsWith(base)) {
-        String js = "(function(){fetch('group_chat.php',{credentials:'same-origin',cache:'no-store'})" +
-          ".then(r=>r.ok?r.json():null).then(j=>{if(j&&Array.isArray(j.messages)){" +
-          "let messages=j.messages;let id=messages.reduce((m,x)=>Math.max(m,Number(x.id)||0),0);" +
-          "let mine=messages.filter(x=>Number(x.id)>" + lastSeen + ");" +
-          "ASDI.onMessages(String(id),String(mine.length));}}).catch(()=>{});})()";
-        web.evaluateJavascript(js, null);
+      if(active && web != null && web.getUrl() != null && web.getUrl().startsWith(base)) {
+        pollChat();
+        pollTickets();
       }
-      pollTickets();
       handler.postDelayed(this, 15000);
     }
   };
 
   @Override public void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
+    getWindow().setFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                         android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
     chatUrl = base + "chatroom.php";
     lastSeen = getPreferences(0).getLong("last_seen_" + base, 0);
     NotificationManager manager = (NotificationManager)getSystemService(NOTIFICATION_SERVICE);
@@ -88,6 +89,8 @@ public class MainActivity extends Activity {
       manager.createNotificationChannel(ticketChannel);
     }
     lastTicketId = getPreferences(0).getLong("ticket_last_" + base, -1);
+    lastGroupMessageId = getPreferences(0).getLong("chat_group_last_" + base, -1);
+    lastPrivateMessageId = getPreferences(0).getLong("chat_private_last_" + base, -1);
     if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
       requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 101);
     }
@@ -109,6 +112,7 @@ public class MainActivity extends Activity {
     FrameLayout.LayoutParams bp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.RIGHT);
     bp.setMargins(0, dp(12), dp(12), 0);
     root.addView(badge, bp);
+    badge.setOnClickListener(v -> { clearBadge(); web.loadUrl(chatUrl); });
     // Photo capture is available from the chat composer attachment picker.
     // No floating button is displayed over the conversation.
     setContentView(root);
@@ -133,6 +137,9 @@ public class MainActivity extends Activity {
       }
       @JavascriptInterface public void onTickets(String json) {
         runOnUiThread(() -> handleTickets(json));
+      }
+      @JavascriptInterface public void onChatSummary(String json) {
+        runOnUiThread(() -> handleChatSummary(json));
       }
     }, "ASDI");
     web.setWebChromeClient(new WebChromeClient() {
@@ -176,7 +183,20 @@ public class MainActivity extends Activity {
       }
       @Override public void onPageFinished(WebView view, String url) {
         if (url != null && url.startsWith(base)) applyMobileCss(view);
-        if (url != null && url.equals(base)) view.loadUrl(chatUrl);
+        if(url == null || !url.startsWith(base)) return;
+        String path = Uri.parse(url).getLastPathSegment();
+        if(path == null || path.equals("index.php") || path.equals("dashboard.php") || url.equals(base)) {
+          // Once authenticated, send the user straight to the full-screen chatroom.
+          // The login page is not redirected, avoiding a login loop.
+          view.evaluateJavascript("(function(){return !!document.querySelector('a[href*=\\\"logout\\\"],a[href*=\\\"chatroom\\\"],form[action*=\\\"logout\\\"]')})()", result -> {
+            if("true".equals(result) && !returningFromLogin) {
+              returningFromLogin = true;
+              view.loadUrl(chatUrl);
+            }
+          });
+        } else if(path.equals("chatroom.php")) {
+          returningFromLogin = false;
+        }
       }
     });
     web.loadUrl(chatUrl);
@@ -213,6 +233,38 @@ public class MainActivity extends Activity {
     } catch (Exception ignored) { }
   }
 
+
+  private void pollChat() {
+    if(web == null || web.getUrl() == null || !web.getUrl().startsWith(base)) return;
+    String js = "(function(){fetch('mobile_chat_notifications.php',{credentials:'same-origin',cache:'no-store'})" +
+      ".then(r=>r.ok?r.json():null).then(j=>{if(j&&j.ok)ASDI.onChatSummary(JSON.stringify(j));}).catch(()=>{});})()";
+    web.evaluateJavascript(js, null);
+  }
+  private void handleChatSummary(String json) {
+    try {
+      JSONObject result = new JSONObject(json);
+      long group = result.optLong("group_latest", 0);
+      long direct = result.optLong("private_latest", 0);
+      if(lastGroupMessageId < 0 || lastPrivateMessageId < 0) {
+        lastGroupMessageId = group; lastPrivateMessageId = direct;
+      } else {
+        int count = 0;
+        if(group > lastGroupMessageId) count++;
+        if(direct > lastPrivateMessageId) count++;
+        if(count > 0) {
+          unread = Math.min(99, unread + count);
+          badge.setText(unread >= 99 ? "99+" : String.valueOf(unread));
+          badge.setVisibility(View.VISIBLE);
+          showNotification();
+        }
+        lastGroupMessageId = Math.max(lastGroupMessageId, group);
+        lastPrivateMessageId = Math.max(lastPrivateMessageId, direct);
+      }
+      getPreferences(0).edit()
+        .putLong("chat_group_last_" + base,lastGroupMessageId)
+        .putLong("chat_private_last_" + base,lastPrivateMessageId).apply();
+    } catch(Exception ignored) {}
+  }
 
   private void pollTickets() {
     if (web == null || web.getUrl() == null || !web.getUrl().startsWith(base)) return;
@@ -271,9 +323,7 @@ public class MainActivity extends Activity {
     }
   }
   @Override public boolean onCreateOptionsMenu(Menu menu) {
-    menu.add(0,1,0,"Chatroom");
-    menu.add(0,3,1,"Private messages");
-    menu.add(0,2,1,"Logout");
+    menu.add(0,2,0,"Logout");
     return true;
   }
   @Override public boolean onOptionsItemSelected(MenuItem item) {
@@ -285,8 +335,8 @@ public class MainActivity extends Activity {
         .setNegativeButton("Cancel",null)
         .setPositiveButton("Logout",(d,w)->{
           web.evaluateJavascript("fetch('mobile_logout.php',{method:'POST',credentials:'same-origin'}).finally(()=>{window.location.href='login.php';})",null);
-          initialized=false;lastSeen=0;lastTicketId=-1;clearBadge();
-          getPreferences(0).edit().remove("last_seen_"+base).remove("ticket_last_"+base).apply();
+          initialized=false;lastSeen=0;lastTicketId=-1;lastGroupMessageId=-1;lastPrivateMessageId=-1;clearBadge();
+          getPreferences(0).edit().remove("last_seen_"+base).remove("ticket_last_"+base).remove("chat_group_last_"+base).remove("chat_private_last_"+base).apply();
         }).show();
       return true;
     }
@@ -333,7 +383,7 @@ public class MainActivity extends Activity {
     if (badge != null) badge.setVisibility(View.GONE);
     ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).cancel(2001);
   }
-  @Override protected void onResume() { super.onResume(); active = true; clearBadge(); }
+  @Override protected void onResume() { super.onResume(); active = true; }
   @Override protected void onPause() { active = false; super.onPause(); }
   @Override public void onBackPressed() { if (web != null && web.canGoBack()) web.goBack(); else super.onBackPressed(); }
   @Override protected void onDestroy() { active = false; handler.removeCallbacksAndMessages(null); if (web != null) web.destroy(); super.onDestroy(); }

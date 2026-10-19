@@ -1,30 +1,27 @@
-# ASDI Chatroom Android v3.28
+# ASDI Android v3.29 — Fullscreen Chatroom
 
-Android WebView app for the current **ASDI Ticketing v3.27** server.
+**Android source project (not a compiled APK).**
 
-- Starts at `http://100.69.232.118:8080/asdi_ticketing/chatroom.php`
-- Uses the server's Groups / Conversation / Users chatroom, including Online / Last Active / Offline statuses.
-- Uses server-side group/private chat Reply, Copy, Forward, Delete; emoji stickers, attachments and group management.
-- Android menu: Chatroom, Private messages, Logout.
-- Attachment picker and camera option retained.
-- Existing ticket and group message notification polling while app is open/active.
-- No server settings screen. Server URL is hard-coded in MainActivity.java.
-- Existing Android application ID retained: `com.asdi.chatroom`.
-- Version: 3.28 (versionCode 328).
+## Changes
+- Login through ASDI, then open `chatroom.php` full-screen, without main website navigation or Chatroom/Messages menu tabs.
+- The application menu retains Logout.
+- New ticket notifications include ticket fields in expanded Android notifications.
+- Red in-app unread chat badge, with notification count (launcher dots depend on Android launcher/notification settings).
+- Group and private chat notification summaries exclude the user's own messages.
+- Server URL fixed to `http://100.69.232.118:8080/asdi_ticketing/`.
+- Photo attachments, emoji, and user status remain server-driven.
 
-**IMPORTANT**: Server must already have ASDI Ticketing v3.27 (or newer) installed. Do not upload this Android source ZIP through System Upgrade.
+## Required server installation
+Back up your ASDI Ticketing installation. Copy all three files from `server/` to your `asdi_ticketing/` root:
+- `mobile_ticket_notifications.php`
+- `mobile_chat_notifications.php`
+- `mobile_logout.php`
 
-## Build APK
-1. Extract this ZIP.
-2. Upload the project contents to a GitHub repository (including `.github/workflows`).
-3. Run Actions > Build ASDI Chatroom v3.28 APK > Run workflow.
-4. Download the `ASDI-Chatroom-v3.28-APK` artifact and install the `app-debug.apk`.
+These are additional PHP endpoints, not a System Upgrade ZIP. The server needs the current `tickets`, `direct_messages`, and `asdi_chat_messages` database schema.
 
-The project uses Android Gradle Plugin / Gradle configured in the repository.
-The APK has **not been compiled or device-tested** in this environment.
+## APK build
+Upload Android project files to GitHub and run `.github/workflows/build_apk.yml`, then download its APK artifact. This ZIP is **not** an APK.
+Existing app upgrades require the **same signing key** as the installed APK. VersionCode is 329.
 
-## Existing app upgrade
-To install over an existing ASDI APK, both builds must have the same application ID and **the same signing certificate**. GitHub Actions debug APKs can be signed with different debug keys on different runs; in that case Android reports a package conflict. Use your persistent release signing key for reliable upgrades. Uninstalling the old app can remove its local data.
-
-## Notes
-This is not a native Messenger clone; it displays your current PHP chatroom and uses its functions. No reliable background push is included; notifications are polled while the app is active.
+## Notification limits
+Chat and ticket alerts poll every 15 seconds **while the app is active**. No Firebase push or reliable notifications when the app is closed/backgrounded. Red badge inside the app is implemented; the launcher red dot/number is controlled by Android/launcher and may differ between phones. New-ticket details are displayed when returned by the server endpoint. On first successful poll, existing tickets/chats are used as a baseline and not alerted.
