@@ -57,6 +57,7 @@ public class MainActivity extends Activity {
   private long lastPrivateMessageId = -1;
   private boolean chatBaselineSet = false;
   private boolean returningFromLogin = false;
+  private boolean ticketViewRequested = false;
   private static final String TICKET_CHANNEL = "asdi_new_tickets_v1";
 
   private final Runnable poll = new Runnable() {
@@ -71,6 +72,7 @@ public class MainActivity extends Activity {
 
   @Override public void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
+    if(getActionBar()!=null)getActionBar().hide();
     getWindow().setFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN,
                          android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
     chatUrl = base + "chatroom.php";
@@ -120,8 +122,9 @@ public class MainActivity extends Activity {
     web.getSettings().setJavaScriptEnabled(true);
     web.getSettings().setDomStorageEnabled(true);
     web.getSettings().setUseWideViewPort(true);
-    web.getSettings().setLoadWithOverviewMode(true);
+    web.getSettings().setLoadWithOverviewMode(false);
     web.getSettings().setTextZoom(100);
+    web.setInitialScale(0);
     web.getSettings().setBuiltInZoomControls(false);
     web.getSettings().setDisplayZoomControls(false);
     web.getSettings().setAllowFileAccess(false);
@@ -177,26 +180,48 @@ public class MainActivity extends Activity {
     web.setWebViewClient(new WebViewClient() {
       @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
         Uri u = request.getUrl();
-        if (("http".equals(u.getScheme()) || "https".equals(u.getScheme())) && Uri.parse(base).getHost().equals(u.getHost()) && u.getPath() != null && u.getPath().startsWith(Uri.parse(base).getPath())) return false;
+        if (("http".equals(u.getScheme()) || "https".equals(u.getScheme())) && Uri.parse(base).getHost().equals(u.getHost()) && u.getPath() != null && u.getPath().startsWith(Uri.parse(base).getPath())) {
+          if (isDashboardUrl(u.toString())) { view.loadUrl(chatUrl); return true; }
+          return false;
+        }
         try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (Exception ignored) { }
         return true;
       }
+      @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+        // Avoid flashing the ticketing dashboard between login and Chatroom.
+        if (url != null && url.startsWith(base) && isDashboardUrl(url)) {
+          view.setVisibility(View.INVISIBLE);
+          // After login the website normally redirects to index.php; reroute it
+          // immediately, before the dashboard can flash or become visible.
+          if (!returningFromLogin) {
+            returningFromLogin = true;
+            view.post(() -> view.loadUrl(chatUrl));
+          }
+        } else view.setVisibility(View.VISIBLE);
+      }
       @Override public void onPageFinished(WebView view, String url) {
-        if (url != null && url.startsWith(base)) applyMobileCss(view);
-        if(url == null || !url.startsWith(base)) return;
-        String path = Uri.parse(url).getLastPathSegment();
-        if(path == null || path.equals("index.php") || path.equals("dashboard.php") || url.equals(base)) {
-          // Once authenticated, send the user straight to the full-screen chatroom.
-          // The login page is not redirected, avoiding a login loop.
-          view.evaluateJavascript("(function(){return !!document.querySelector('a[href*=\\\"logout\\\"],a[href*=\\\"chatroom\\\"],form[action*=\\\"logout\\\"]')})()", result -> {
-            if("true".equals(result) && !returningFromLogin) {
-              returningFromLogin = true;
-              view.loadUrl(chatUrl);
-            }
-          });
-        } else if(path.equals("chatroom.php")) {
-          returningFromLogin = false;
+        if (url == null || !url.startsWith(base)) { view.setVisibility(View.VISIBLE); return; }
+        applyMobileCss(view);
+        if (isDashboardUrl(url)) {
+          view.setVisibility(View.INVISIBLE);
+          if (!returningFromLogin) {
+            returningFromLogin = true;
+            view.loadUrl(chatUrl);
+          }
+          return;
         }
+        if (isLoginUrl(url)) {
+          returningFromLogin = false;
+          view.setVisibility(View.VISIBLE);
+          return;
+        }
+        if (isChatUrl(url)) {
+          returningFromLogin = false;
+          ticketViewRequested = false;
+          // Mark the actual chat page for scoped, Android-only CSS.
+          view.evaluateJavascript("document.body.classList.add('asdi-android-chat-only')", null);
+        }
+        view.setVisibility(View.VISIBLE);
       }
     });
     web.loadUrl(chatUrl);
@@ -218,6 +243,18 @@ public class MainActivity extends Activity {
     pendingPhoto = null;
   }
 
+  private boolean isDashboardUrl(String url) {
+    if(url == null || !url.startsWith(base)) return false;
+    String path = Uri.parse(url).getLastPathSegment();
+    return url.equals(base) || path == null || "index.php".equals(path) || "dashboard.php".equals(path);
+  }
+  private boolean isLoginUrl(String url) {
+    return url != null && url.startsWith(base) && "login.php".equals(Uri.parse(url).getLastPathSegment());
+  }
+  private boolean isChatUrl(String url) {
+    return url != null && url.startsWith(base) && "chatroom.php".equals(Uri.parse(url).getLastPathSegment());
+  }
+
   private void applyMobileCss(WebView view) {
     try (InputStream in = getAssets().open("mobile.css")) {
       byte[] bytes = new byte[in.available()];
@@ -226,6 +263,7 @@ public class MainActivity extends Activity {
       String css = new String(bytes, 0, len, StandardCharsets.UTF_8);
       String js = "(function(){" +
         "if(!document.querySelector('meta[name=viewport]')){var m=document.createElement('meta');m.name='viewport';m.content='width=device-width,initial-scale=1,viewport-fit=cover';document.head.appendChild(m);}" +
+        "if(location.pathname.endsWith('/chatroom.php'))document.body.classList.add('asdi-android-chat-only');" +
         "var old=document.getElementById('asdi-mobile-css');if(old)old.remove();" +
         "var st=document.createElement('style');st.id='asdi-mobile-css';st.textContent=" + JSONObject.quote(css) + ";document.head.appendChild(st);" +
         "})()";
@@ -322,26 +360,8 @@ public class MainActivity extends Activity {
       if(url!=null && url.startsWith(base+"ticket_view.php?id=")) web.loadUrl(url);
     }
   }
-  @Override public boolean onCreateOptionsMenu(Menu menu) {
-    menu.add(0,2,0,"Logout");
-    return true;
-  }
-  @Override public boolean onOptionsItemSelected(MenuItem item) {
-    if(item.getItemId()==1) { web.loadUrl(chatUrl); return true; }
-    if(item.getItemId()==3) { web.loadUrl(base+"messenger.php"); return true; }
-    if(item.getItemId()==2) {
-      new AlertDialog.Builder(this).setTitle("Log out?")
-        .setMessage("End your ASDI session on this device?")
-        .setNegativeButton("Cancel",null)
-        .setPositiveButton("Logout",(d,w)->{
-          web.evaluateJavascript("fetch('mobile_logout.php',{method:'POST',credentials:'same-origin'}).finally(()=>{window.location.href='login.php';})",null);
-          initialized=false;lastSeen=0;lastTicketId=-1;lastGroupMessageId=-1;lastPrivateMessageId=-1;clearBadge();
-          getPreferences(0).edit().remove("last_seen_"+base).remove("ticket_last_"+base).remove("chat_group_last_"+base).remove("chat_private_last_"+base).apply();
-        }).show();
-      return true;
-    }
-    return super.onOptionsItemSelected(item);
-  }
+  // No Android action-bar menu or tabs. The WebView is the only main screen.
+  @Override public boolean onCreateOptionsMenu(Menu menu) { return false; }
 
   private int dp(int v) { return (int)(v * getResources().getDisplayMetrics().density + .5f); }
   private void updateMessages(long newest, int incoming) {
@@ -385,6 +405,13 @@ public class MainActivity extends Activity {
   }
   @Override protected void onResume() { super.onResume(); active = true; }
   @Override protected void onPause() { active = false; super.onPause(); }
-  @Override public void onBackPressed() { if (web != null && web.canGoBack()) web.goBack(); else super.onBackPressed(); }
+  @Override public void onBackPressed() {
+    if (web == null) { super.onBackPressed(); return; }
+    String url = web.getUrl();
+    if (isLoginUrl(url)) { super.onBackPressed(); return; }
+    if (!isChatUrl(url)) { web.loadUrl(chatUrl); return; }
+    new AlertDialog.Builder(this).setTitle("Exit ASDI Chatroom?")
+      .setNegativeButton("Stay", null).setPositiveButton("Exit", (dialog, which) -> finish()).show();
+  }
   @Override protected void onDestroy() { active = false; handler.removeCallbacksAndMessages(null); if (web != null) web.destroy(); super.onDestroy(); }
 }
